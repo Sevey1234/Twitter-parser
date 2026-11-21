@@ -64,22 +64,26 @@ def test_precise_boundary_resume_pagination_since(repo, author, clock, client, b
     clock.step(hours=2)
     def second(req):
         calls.append(dict(req.url.params))
+        if req.url.params.get("since_id"):
+            assert req.url.params["since_id"] == "105"
+            return page()
         return page([post(104), post(103, "2026-11-21T09:00:00.451Z"),
                      post(102, author["tracking_started_at"]), post(101, "2026-11-20T00:00:00Z"),
                      post(111, "2026-11-21T12:00:00Z")])
     Timeline(again, client(second)).sync(author["id"])
-    assert calls[-1]["pagination_token"] == "page2"
-    assert calls[0]["end_time"] == calls[-1]["end_time"]
+    assert calls[-2]["pagination_token"] == "page2"
+    assert calls[0]["end_time"] == calls[-2]["end_time"] < calls[-1]["end_time"]
     assert calls[0]["start_time"] == "2026-11-21T09:00:00Z"
     assert calls[0]["exclude"] == "retweets,replies" and "created_at" in calls[0]["tweet.fields"]
     assert again.author("Alice")["last_tweet_id"] == "105"
     assert {r["x_tweet_id"] for r in again.pending()} == {"103", "104", "105"}
+    clock.step(minutes=1)
     def third(req):
         assert req.url.params["since_id"] == "105" and "start_time" not in req.url.params
         return page([post(108, "2026-11-21T10:01:00Z"), post(105)])
     Timeline(again, client(third)).sync(author["id"])
     assert len(again.pending()) == 4
-    assert budget.stats()[:3] == (4, 0, 9)
+    assert budget.stats()[:3] == (5, 0, 9)
 
 
 def test_empty_expired_and_cyclic_pages(repo, author, clock, client):

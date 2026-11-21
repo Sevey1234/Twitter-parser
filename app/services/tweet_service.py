@@ -8,9 +8,12 @@ class Timeline:
     def __init__(self, repo, twitter):
         self.repo, self.twitter = repo, twitter
 
-    def window(self, aid):
+    def horizon(self):
+        return stamp((self.repo.clock() - timedelta(seconds=10)).replace(microsecond=0))
+
+    def window(self, aid, end=None):
         # Keep a stable upper bound for every page, including retries after a restart.
-        end = stamp((self.repo.clock() - timedelta(seconds=10)).replace(microsecond=0))
+        end = end or self.horizon()
         with self.repo.db.connect(write=True) as db:
             author = db.execute("SELECT * FROM authors WHERE id=? AND is_active=1", (aid,)).fetchone()
             if not author or max(author["tracking_started_at"], author["checked_at"] or "") >= end:
@@ -53,10 +56,11 @@ class Timeline:
         return True
 
     def sync(self, aid):
+        target_end = self.horizon()
         visited = set()
         restarted = False
         while True:
-            window = self.window(aid)
+            window = self.window(aid, target_end)
             if not window:
                 return
             author, state = window
@@ -74,9 +78,16 @@ class Timeline:
                 continue
             if token and (token == state["pagination_token"] or token in visited):
                 raise UserError("X повторил токен страницы. Курсор сохранён.")
-            if not self.save_page(author, state, posts, token, size) or not token:
+            if not self.save_page(author, state, posts, token, size):
                 return
-            visited.add(token)
+            if token:
+                visited.add(token)
+            elif state["end_time"] < target_end:
+                # The interrupted interval is complete. Catch up to this invocation's horizon.
+                visited.clear()
+                restarted = False
+            else:
+                return
 
     def collect(self):
         errors = []

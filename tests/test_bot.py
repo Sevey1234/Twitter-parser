@@ -39,7 +39,7 @@ def test_telebot_dispatch_owner_and_restart(chat, repo, clock):
     assert "кабинет" in input_text(chat, "/start")
     input_text(chat, "/add_author")
     assert "Введите" in input_text(chat, "@@bad")
-    assert "Подтверд" in str(chat.bot.send_message.call_args) or repo.conversation()[0] == "username"
+    assert repo.conversation()[0] == "username"
     assert "Добавить @Alice" in input_text(chat, "https://x.com/Alice")
     assert repo.counts()[0] == 0
     clock.step(minutes=5)
