@@ -121,7 +121,18 @@ class TwitterClient:
                 text = note.get("text") or item["text"]
                 if not isinstance(text, str) or not text.strip():
                     raise ValueError
-                posts.append(Post(valid_id(item["id"]), text, moment(item["created_at"])))
+                xid, created = valid_id(item["id"]), moment(item["created_at"])
+                versions = item.get("edit_history_tweet_ids") or item.get("edit_history_post_ids") or [xid]
+                if not isinstance(versions, list):
+                    raise ValueError
+                original = min((valid_id(v) for v in versions), key=int)
+                original_created = created
+                if original != xid:
+                    # X Snowflakes encode the original millisecond even after the text has been edited.
+                    ms = (int(original) >> 22) + 1288834974657
+                    original_created = datetime.fromtimestamp(ms // 1000, timezone.utc).replace(
+                        microsecond=(ms % 1000) * 1000)
+                posts.append(Post(xid, text, created, original, original_created))
             meta = payload["meta"]
             token = meta.get("next_token")
             if meta["result_count"] != len(posts) or (token is not None and

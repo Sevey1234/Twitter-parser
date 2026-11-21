@@ -26,7 +26,7 @@ def batches(texts):
     group, used = [], 0
     for text in texts:
         while text:
-            piece = text[:BATCH_BYTES // 4]
+            piece = text[:900]
             text = text[len(piece):]
             size = len(json.dumps(piece, ensure_ascii=False).encode("utf-8")) + 2
             if group and size + used > BATCH_BYTES:
@@ -56,7 +56,7 @@ def validate(raw, texts):
             raise ValueError
         sentences.append(" ".join(sentence.split()))
     result = " ".join(dict.fromkeys(sentences))
-    if len(result) > 950:
+    if len(result) > 900 or len(result.encode("utf-8")) > 2200:
         raise ValueError
     return result
 

@@ -8,9 +8,12 @@ class Timeline:
     def __init__(self, repo, twitter):
         self.repo, self.twitter = repo, twitter
 
-    def window(self, aid):
+    def horizon(self):
+        return stamp((self.repo.clock() - timedelta(seconds=10)).replace(microsecond=0))
+
+    def window(self, aid, end=None):
         # Keep a stable upper bound for every page, including retries after a restart.
-        end = stamp((self.repo.clock() - timedelta(seconds=10)).replace(microsecond=0))
+        end = end or self.horizon()
         with self.repo.db.connect(write=True) as db:
             author = db.execute("SELECT * FROM authors WHERE id=? AND is_active=1", (aid,)).fetchone()
             if not author or max(author["tracking_started_at"], author["checked_at"] or "") >= end:
@@ -23,8 +26,9 @@ class Timeline:
         lower = moment(author["tracking_started_at"])
         upper = moment(state["end_time"])
         floor_id = int(author["last_tweet_id"] or 0)
-        eligible = [p for p in posts if lower < p.created < upper and int(p.x_id) > floor_id]
-        high = max([int(state["high_id"] or 0), *(int(p.x_id) for p in eligible)])
+        in_window = [p for p in posts if lower < p.created < upper and int(p.x_id) > floor_id]
+        eligible = [p for p in in_window if (p.original_created or p.created) > lower]
+        high = max([int(state["high_id"] or 0), *(int(p.x_id) for p in in_window)])
         seen = state["seen_count"] + len(posts)
         if seen >= 800 and not token:
             raise UserError("Достигнут предел ленты X (800). Полнота не подтверждена, курсор сохранён.")
@@ -34,8 +38,12 @@ class Timeline:
                 return False
             when = stamp(self.repo.clock())
             db.executemany("""INSERT INTO tweets(x_tweet_id,author_id,text,created_at,fetched_at,processing_status)
-                           VALUES(?,?,?,?,?,'staged') ON CONFLICT(x_tweet_id) DO NOTHING""",
-                           [(p.x_id, author["id"], p.text, stamp(p.created), when) for p in eligible])
+                           SELECT ?,?,?,?,?,'staged' WHERE NOT EXISTS
+                           (SELECT 1 FROM removed_posts WHERE x_tweet_id=?)
+                           ON CONFLICT(x_tweet_id) DO UPDATE SET text=excluded.text
+                           WHERE tweets.processing_status IN ('pending','staged')""",
+                           [(p.original_id or p.x_id, author["id"], p.text, stamp(p.original_created or p.created),
+                             when, p.original_id or p.x_id) for p in eligible])
             if token:
                 db.execute("""UPDATE sync_state SET pagination_token=?,page_size=?,high_id=?,seen_count=?
                            WHERE author_id=?""", (token, size, str(high) if high else None, seen, author["id"]))
@@ -48,10 +56,11 @@ class Timeline:
         return True
 
     def sync(self, aid):
+        target_end = self.horizon()
         visited = set()
         restarted = False
         while True:
-            window = self.window(aid)
+            window = self.window(aid, target_end)
             if not window:
                 return
             author, state = window
@@ -69,9 +78,16 @@ class Timeline:
                 continue
             if token and (token == state["pagination_token"] or token in visited):
                 raise UserError("X повторил токен страницы. Курсор сохранён.")
-            if not self.save_page(author, state, posts, token, size) or not token:
+            if not self.save_page(author, state, posts, token, size):
                 return
-            visited.add(token)
+            if token:
+                visited.add(token)
+            elif state["end_time"] < target_end:
+                # The interrupted interval is complete. Catch up to this invocation's horizon.
+                visited.clear()
+                restarted = False
+            else:
+                return
 
     def collect(self):
         errors = []

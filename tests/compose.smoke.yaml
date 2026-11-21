@@ -1,0 +1,21 @@
+# Integration test only. The production bot command remains in its Dockerfile.
+services:
+  bot:
+    restart: "no"
+    command:
+      - python
+      - -c
+      - |
+        import os
+        import httpx
+
+        url, model = os.environ["OLLAMA_URL"], os.environ["OLLAMA_MODEL"]
+        with httpx.Client(trust_env=False, timeout=180) as client:
+            model_info = client.post(url + "/api/show", json={"model": model})
+            model_info.raise_for_status()
+            response = client.post(url + "/api/generate", json={
+                "model": model, "prompt": "Write the number four.",
+                "stream": False, "options": {"temperature": 0, "num_predict": 16}})
+            response.raise_for_status()
+            assert response.json()["response"].strip()
+        print("Ollama loaded the configured model and generated a response.")

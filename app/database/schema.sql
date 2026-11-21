@@ -83,3 +83,8 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     endpoint TEXT PRIMARY KEY,
     retry_at TEXT NOT NULL
 );
+
+-- Store only an ID after an explicit content-removal request, including during pagination.
+CREATE TABLE IF NOT EXISTS removed_posts (
+    x_tweet_id TEXT PRIMARY KEY
+);

@@ -27,7 +27,8 @@ log = logging.getLogger(__name__)
 
 def serve(cfg):
     db = Database(cfg.database)
-    with FileLock(str(db.path) + ".lock", timeout=0), httpx.Client() as http:
+    with (FileLock(str(db.path) + ".lock", timeout=0), httpx.Client() as http,
+          httpx.Client(trust_env=False) as local_http):
         repo = Repository(db, cfg.owner, cfg.hours, cfg.budget)
         bot = telebot.TeleBot(cfg.telegram_token, threaded=False)
         apihelper.RETRY_ON_ERROR = False
@@ -35,7 +36,7 @@ def serve(cfg):
         x = TwitterClient(http, cfg.bearer_token, usage)
         delivery = Delivery(repo, bot)
         delivery.recover()
-        ai = Summarizer(http, cfg.ollama_url, cfg.model)
+        ai = Summarizer(local_http, cfg.ollama_url, cfg.model)
         digest = DigestService(repo, Timeline(repo, x), ai, delivery)
         scheduler = Scheduler(repo, digest, lambda text: bot.send_message(cfg.owner, text))
         register(bot, repo, Authors(repo, x), usage, scheduler, delivery)
@@ -56,7 +57,7 @@ def serve(cfg):
                                  skip_pending=False)
         finally:
             scheduler.stop()
-            bot.close_session()
+            bot.stop_bot()
 
 
 def main():

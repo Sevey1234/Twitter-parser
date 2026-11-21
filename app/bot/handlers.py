@@ -21,6 +21,7 @@ HELP = """Twitter Digest Bot · личный кабинет
 /stats — запросы, публикации и расходы
 /budget — месячный предел расходов
 /delivery — состояние очереди и спорных доставок
+/forget_tweet ID — удалить источник и его выпуск
 /cancel — отменить ввод
 /help — эта справка"""
 ACTIONS = {"remove_author": "remove", "pause_author": "pause", "resume_author": "resume",
@@ -117,6 +118,11 @@ class Chat:
                     self.say(f"<b>Архив #{int(arg)} · часть {part['part']}</b>\n" + part["html"], html=True)
             else:
                 raise UserError("Используйте /history или /history N с номером из истории.")
+        elif cmd == "forget_tweet":
+            if not arg.isascii() or not arg.isdigit() or not 1 <= len(arg) <= 19:
+                raise UserError("Укажите числовой ID из ссылки: /forget_tweet ID.")
+            self.ask(State.ERASE, "Удалить этот твит, весь связанный выпуск и его сохранённые "
+                     "исходники? Бот также попробует удалить части выпуска из чата.", [kb.YES], {"id": arg})
         elif cmd == "delivery":
             self.say(self.delivery.inspect_or_resolve(arg))
         else:
@@ -158,6 +164,8 @@ class Chat:
                 self.repo.change_author(name, action)
                 self.finish("Пауза включена." if action == "pause" else
                             "Отслеживание включено. Публикации за время паузы пропускаются.")
+        elif state == State.ERASE and value == kb.YES:
+            self.finish(self.delivery.erase(data["id"]))
         elif state == State.LABEL:
             self.repo.change_author(data["username"], "rename", value)
             self.finish("Подпись сохранена.")
