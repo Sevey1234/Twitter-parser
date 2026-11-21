@@ -1,0 +1,121 @@
+// SQLite. Источник структуры: app/database/schema.sql.
+// Все метки времени — UTC; денежные значения — целые микродоллары USD.
+
+Table bot_users {
+  telegram_user_id integer [pk]
+  digest_interval_hours integer [not null]
+  monthly_budget_micros integer [not null]
+  language text [not null, default: 'ru']
+  next_due_at text [not null]
+  last_digest_at text
+  state text
+  state_data text [not null, default: '{}']
+  Note: 'Настройки владельца и FSM. Одна строка владельца (индекс по константе).'
+}
+
+Table authors {
+  id integer [pk]
+  x_user_id text [unique, not null]
+  username text [unique, not null, note: 'COLLATE NOCASE, UNIQUE']
+  display_name text [not null]
+  tracking_started_at text [not null]
+  last_tweet_id text
+  is_active integer [not null, default: 1]
+  created_at text [not null]
+  checked_at text
+  last_error text
+  Note: 'Отслеживаемые профили'
+}
+
+Table sync_state {
+  author_id integer [pk]
+  end_time text [not null]
+  pagination_token text
+  page_size integer
+  high_id text
+  seen_count integer [not null, default: 0]
+  Note: 'Незавершённое окно'
+}
+
+Table tweets {
+  id integer [pk]
+  x_tweet_id text [unique, not null]
+  author_id integer [not null]
+  text text [not null]
+  created_at text [not null]
+  fetched_at text [not null]
+  processing_status text [not null]
+  indexes {
+    (processing_status, created_at) [name: 'tweets_status']
+    (author_id, processing_status, created_at) [name: 'tweets_author_status']
+  }
+  Note: 'Исходные публикации'
+}
+
+Table digests {
+  id integer [pk]
+  owner_id integer [not null]
+  digest_text text [not null]
+  period_start text [not null]
+  period_end text [not null]
+  created_at text [not null]
+  sent_at text
+  status text [not null]
+  indexes {
+    (status, sent_at) [name: 'digests_retention']
+  }
+  Note: 'Выпуски дайджеста. Один queued на владельца (частичный UNIQUE).'
+}
+
+Table digest_tweets {
+  digest_id integer [not null]
+  tweet_id integer [unique, not null]
+  indexes {
+    (digest_id, tweet_id) [pk]
+  }
+  Note: 'Состав выпуска'
+}
+
+Table digest_parts {
+  digest_id integer [not null]
+  part integer [not null]
+  html text [not null]
+  status text [not null, default: 'pending']
+  message_id integer
+  retry_at text
+  indexes {
+    (digest_id, part) [pk]
+  }
+  Note: 'Очередь доставки'
+}
+
+Table api_usage {
+  id integer [pk]
+  endpoint text [not null]
+  requested_at text [not null]
+  resources_received integer [not null, default: 0]
+  estimated_micros integer [not null]
+  status text [not null, default: 'reserved']
+  indexes {
+    (requested_at) [name: 'usage_month']
+  }
+  Note: 'Стоимость запросов'
+}
+
+Table rate_limits {
+  endpoint text [pk]
+  retry_at text [not null]
+  Note: 'Паузы X API'
+}
+
+Table removed_posts {
+  x_tweet_id text [pk]
+  Note: 'Удалённые источники'
+}
+
+Ref: authors.id - sync_state.author_id [delete: cascade]
+Ref: tweets.author_id > authors.id [delete: cascade]
+Ref: digests.owner_id > bot_users.telegram_user_id
+Ref: tweets.id - digest_tweets.tweet_id [delete: cascade]
+Ref: digest_tweets.digest_id > digests.id [delete: cascade]
+Ref: digest_parts.digest_id > digests.id [delete: cascade]
