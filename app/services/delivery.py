@@ -85,6 +85,21 @@ class Delivery:
             self.mark(did, part, "sent", message_id=msg.message_id)
         return True
 
+    def erase(self, xid):
+        manual = []
+        for message_id, did, part in self.repo.erase_post(xid):
+            if message_id is not None:
+                try:
+                    self.bot.delete_message(self.repo.owner, message_id)
+                    continue
+                except Exception:
+                    pass
+            manual.append(f"#{did} · {part}")
+        result = "Источник и связанные выпуски удалены из базы."
+        if manual:
+            result += " Вручную удалите из чата части " + ", ".join(manual) + "."
+        return result
+
     def inspect_or_resolve(self, arg):
         did = self.open_id()
         if not did:

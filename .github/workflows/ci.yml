@@ -1,0 +1,52 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=81
+
+  docker:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: config-check-only
+      TELEGRAM_ALLOWED_USER_ID: "1"
+      X_BEARER_TOKEN: config-check-only
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose
+        run: docker compose config --quiet
+      - name: Build bot image
+        run: docker compose build bot
+      - name: Check missing credentials without contacting external APIs
+        run: |
+          set +e
+          output=$(docker compose run --rm --no-deps -T -e TELEGRAM_BOT_TOKEN= -e X_BEARER_TOKEN= -e TELEGRAM_ALLOWED_USER_ID= bot 2>&1)
+          rc=$?
+          set -e
+          test "$rc" = 2
+          echo "$output" | grep -F 'Заполните в .env'
+      - name: Reopen SQLite from a second container
+        run: |
+          docker compose run --rm --no-deps -T bot python -c "from app.database.connection import Database; from app.database.repository import Repository; Repository(Database('/data/check.db'), 1).interval(6)"
+          docker compose run --rm --no-deps -T bot python -c "from app.database.connection import Database; from app.database.repository import Repository; assert Repository(Database('/data/check.db'), 1).settings()['digest_interval_hours'] == 6"
+      - if: always()
+        run: docker compose down --volumes

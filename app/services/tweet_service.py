@@ -23,8 +23,9 @@ class Timeline:
         lower = moment(author["tracking_started_at"])
         upper = moment(state["end_time"])
         floor_id = int(author["last_tweet_id"] or 0)
-        eligible = [p for p in posts if lower < p.created < upper and int(p.x_id) > floor_id]
-        high = max([int(state["high_id"] or 0), *(int(p.x_id) for p in eligible)])
+        in_window = [p for p in posts if lower < p.created < upper and int(p.x_id) > floor_id]
+        eligible = [p for p in in_window if (p.original_created or p.created) > lower]
+        high = max([int(state["high_id"] or 0), *(int(p.x_id) for p in in_window)])
         seen = state["seen_count"] + len(posts)
         if seen >= 800 and not token:
             raise UserError("Достигнут предел ленты X (800). Полнота не подтверждена, курсор сохранён.")
@@ -34,8 +35,12 @@ class Timeline:
                 return False
             when = stamp(self.repo.clock())
             db.executemany("""INSERT INTO tweets(x_tweet_id,author_id,text,created_at,fetched_at,processing_status)
-                           VALUES(?,?,?,?,?,'staged') ON CONFLICT(x_tweet_id) DO NOTHING""",
-                           [(p.x_id, author["id"], p.text, stamp(p.created), when) for p in eligible])
+                           SELECT ?,?,?,?,?,'staged' WHERE NOT EXISTS
+                           (SELECT 1 FROM removed_posts WHERE x_tweet_id=?)
+                           ON CONFLICT(x_tweet_id) DO UPDATE SET text=excluded.text
+                           WHERE tweets.processing_status IN ('pending','staged')""",
+                           [(p.original_id or p.x_id, author["id"], p.text, stamp(p.original_created or p.created),
+                             when, p.original_id or p.x_id) for p in eligible])
             if token:
                 db.execute("""UPDATE sync_state SET pagination_token=?,page_size=?,high_id=?,seen_count=?
                            WHERE author_id=?""", (token, size, str(high) if high else None, seen, author["id"]))

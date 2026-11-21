@@ -10,3 +10,4 @@ class State(str, Enum):
     REMOVE = "confirm_remove"
     LABEL = "label"
     RESET = "reset"
+    ERASE = "erase"

@@ -36,3 +36,5 @@ class Post:
     x_id: str
     text: str
     created: datetime
+    original_id: str | None = None
+    original_created: datetime | None = None

@@ -46,7 +46,10 @@ class Scheduler:
             result = "Сбой обработки. Состояние сохранено, повторите /digest."
         log.info("%s", result)
         if manual and result != "Дайджест отправлен.":
-            self.notify(result)
+            try:
+                self.notify(result)
+            except Exception as exc:
+                log.warning("Не удалось отправить статус проверки: %s", type(exc).__name__)
 
     def manual(self):
         if not self.manual_lock.acquire(blocking=False):

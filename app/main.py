@@ -56,7 +56,7 @@ def serve(cfg):
                                  skip_pending=False)
         finally:
             scheduler.stop()
-            bot.close_session()
+            bot.stop_bot()
 
 
 def main():

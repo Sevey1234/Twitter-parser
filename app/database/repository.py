@@ -125,6 +125,27 @@ class Repository:
                        (cutoff,))
             db.execute("DELETE FROM digests WHERE status='sent' AND sent_at<?", (cutoff,))
 
+    def erase_post(self, xid):
+        """A digest is one editorial work. Erase the whole issue if a source is withdrawn."""
+        with self.db.connect(write=True) as db:
+            affected = db.execute("""SELECT DISTINCT d.id FROM digests d
+                LEFT JOIN digest_tweets dt ON dt.digest_id=d.id LEFT JOIN tweets t ON t.id=dt.tweet_id
+                WHERE t.x_tweet_id=? OR instr(d.digest_text,?)>0""",
+                (xid, "/status/" + xid + '"')).fetchall()
+            messages = []
+            for issue in affected:
+                parts = db.execute("SELECT * FROM digest_parts WHERE digest_id=?", (issue[0],)).fetchall()
+                if any(p["status"] == "sending" for p in parts):
+                    raise UserError("Идёт отправка этой части. Повторите удаление после завершения.")
+                messages.extend((p["message_id"], issue[0], p["part"]) for p in parts
+                                if p["status"] in ("sent", "uncertain"))
+                db.execute("""DELETE FROM tweets WHERE id IN
+                           (SELECT tweet_id FROM digest_tweets WHERE digest_id=?)""", (issue[0],))
+                db.execute("DELETE FROM digests WHERE id=?", (issue[0],))
+            db.execute("DELETE FROM tweets WHERE x_tweet_id=?", (xid,))
+            db.execute("INSERT OR IGNORE INTO removed_posts VALUES(?)", (xid,))
+            return messages
+
     def counts(self):
         with self.db.connect() as db:
             return tuple(db.execute("SELECT count(*) FROM " + table).fetchone()[0]
