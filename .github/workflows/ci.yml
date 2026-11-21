@@ -48,5 +48,15 @@ jobs:
         run: |
           docker compose run --rm --no-deps -T bot python -c "from app.database.connection import Database; from app.database.repository import Repository; Repository(Database('/data/check.db'), 1).interval(6)"
           docker compose run --rm --no-deps -T bot python -c "from app.database.connection import Database; from app.database.repository import Repository; assert Repository(Database('/data/check.db'), 1).settings()['digest_interval_hours'] == 6"
+      - name: Start Compose services and run local model inference
+        timeout-minutes: 12
+        env:
+          OLLAMA_MODEL: qwen2.5:0.5b
+        run: |
+          stack() { docker compose -f compose.yaml -f tests/compose.smoke.yaml "$@"; }
+          stack up --build -d
+          rc=$(docker wait "$(stack ps --all --quiet bot)")
+          stack logs ollama-init bot
+          test "$rc" = 0
       - if: always()
         run: docker compose down --volumes
