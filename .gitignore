@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage*
+!.coveragerc
+htmlcov/
+.venv/
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-*
+*.sqlite*
+*.lock
