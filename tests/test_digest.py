@@ -171,3 +171,23 @@ def test_crash_between_send_and_ack(repo, pending, clock, delivery):
     assert repo.history()[0]["status"] == "sent"
     with pytest.raises(UserError):
         delivery.mark(did, 1, "sent", expected="uncertain")
+
+
+def test_collection_continues_while_telegram_delivery_is_uncertain(repo, clock, delivery, pending):
+    from app.database.models import stamp
+    delivery.queue(pending, ["старый выпуск"], clock(), clock())
+    delivery.bot.send_message.side_effect = TimeoutError()
+    assert not delivery.flush()
+    timeline = Mock()
+    def collect():
+        with repo.db.connect(write=True) as db:
+            db.execute("""INSERT INTO tweets(x_tweet_id,author_id,text,created_at,fetched_at,processing_status)
+                       VALUES(?,?,?,?,?,'pending')""",
+                       ("777", pending[0]["author_id"], "new post", stamp(clock()), stamp(clock())))
+        return []
+    timeline.collect.side_effect = collect
+    ai = Mock()
+    assert "/delivery" in DigestService(repo, timeline, ai, delivery).run()
+    assert [post["x_tweet_id"] for post in repo.pending()] == ["777"]
+    assert len(repo.history()) == 1 and delivery.bot.send_message.call_count == 1
+    ai.summarize.assert_not_called()

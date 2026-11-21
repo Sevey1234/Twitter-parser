@@ -15,9 +15,11 @@ class DigestService:
         if not self.lock.acquire(blocking=False):
             return "Проверка уже выполняется."
         try:
-            if not self.delivery.flush():
-                return "Предыдущий дайджест в очереди. Подробности в /delivery."
+            ready = self.delivery.flush()
+            # Keep collecting while Telegram is offline or the owner checks an uncertain part.
             errors = self.timeline.collect()
+            if not ready:
+                return "Предыдущий дайджест в очереди. Новые записи сохранены. Подробности в /delivery."
             rows = self.repo.pending()
             if not rows:
                 return "Есть ошибки чтения. Подробности в /authors." if errors else "Новых публикаций нет."

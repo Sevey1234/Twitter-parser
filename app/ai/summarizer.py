@@ -56,7 +56,9 @@ def validate(raw, texts):
             raise ValueError
         sentences.append(" ".join(sentence.split()))
     result = " ".join(dict.fromkeys(sentences))
-    if len(result) > 900 or len(result.encode("utf-8")) > 2200:
+    # Two validated reductions must fit the next batch, including JSON escaping.
+    encoded_size = len(json.dumps(result, ensure_ascii=False).encode("utf-8")) + 2
+    if len(result) > 900 or encoded_size > BATCH_BYTES // 2:
         raise ValueError
     return result
 
