@@ -2,8 +2,9 @@ import logging
 from dataclasses import asdict
 
 from app.config import dollars, micros
-from app.database.models import Profile, UserError
+from app.database.models import Profile, UserError, moment
 from app.database.repository import INTERVALS
+from app.services.formatting import schedule_time
 from . import keyboards as kb
 from .states import State
 
@@ -16,11 +17,11 @@ HELP = """Twitter Digest Bot · личный кабинет
 /interval — периодичность дайджеста
 /digest — проверить новые публикации сейчас
 /history — история, /history N — части дайджеста
-/settings — текущие настройки
+/settings — расписание и результат последней плановой проверки
 /reset_settings — вернуть настройки из .env
 /stats — запросы, публикации и расходы
 /budget — месячный предел расходов
-/delivery — состояние очереди и спорных доставок
+/delivery — ожидание выжимки и состояние доставки
 /forget_tweet ID — удалить источник и его выпуск
 /cancel — отменить ввод
 /help — эта справка"""
@@ -95,8 +96,14 @@ class Chat:
             self.ask(State.RESET, "Вернуть интервал и бюджет из .env?", [kb.YES])
         elif cmd == "settings":
             row = self.repo.settings()
+            last = "пока не выполнялась с момента обновления."
+            if row["last_check_at"]:
+                last = f"{schedule_time(moment(row['last_check_at']))} — {row['last_check_result']}"
+            retry = (f"Повтор выжимки: {schedule_time(moment(row['summary_retry_at']))}.\n"
+                     if row["summary_retry_at"] else "")
             self.say(f"Язык: русский\nИнтервал: {row['digest_interval_hours']} ч\n"
-                     f"Следующая проверка (UTC): {row['next_due_at'][:16].replace('T', ' ')}\n"
+                     f"Следующая плановая проверка: {schedule_time(moment(row['next_due_at']))}.\n"
+                     f"Последняя плановая проверка: {last}\n{retry}"
                      f"Бюджет: ${dollars(row['monthly_budget_micros'])}/месяц.\n"
                      "Изменить: /interval, /budget. Сброс: /reset_settings.")
         elif cmd == "stats":

@@ -104,3 +104,17 @@ def test_config(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bad")
     with pytest.raises(UserError, match="формат"):
         Config.load()
+
+
+def test_old_volume_adds_schedule_state_without_losing_posts(repo, pending):
+    # An existing installation has the same business tables and no scheduler journal.
+    from app.database.connection import Database
+    from app.database.repository import Repository
+    with repo.db.connect(write=True) as db:
+        db.execute("DROP TABLE schedule_state")
+    reopened = Repository(Database(repo.db.path), repo.owner, clock=repo.clock)
+    assert reopened.settings()["last_check_at"] is None
+    assert reopened.settings()["summary_retry_at"] is None
+    assert reopened.pending_count() == len(pending) and len(reopened.authors()) == 2
+    reopened.record_check(repo.clock(), "Выпуск отправлен.")
+    assert Repository(Database(repo.db.path), repo.owner).settings()["last_check_result"] == "Выпуск отправлен."

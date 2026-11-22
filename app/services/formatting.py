@@ -1,3 +1,4 @@
+from datetime import timedelta, timezone
 from html import escape
 from textwrap import wrap
 
@@ -37,6 +38,12 @@ def author_blocks(handle, summary, ids):
     return parts
 
 
+def schedule_time(value):
+    utc = value.astimezone(timezone.utc)
+    moscow = utc.astimezone(timezone(timedelta(hours=3)))
+    return f"{moscow:%d.%m.%Y %H:%M} МСК ({utc:%d.%m.%Y %H:%M} UTC)"
+
+
 def render(groups, start, end, hours, next_due):
     def pretty(t):
         return t.strftime("%d.%m.%Y %H:%M")
@@ -47,7 +54,7 @@ def render(groups, start, end, hours, next_due):
         blocks.extend(author_blocks(handle, summary, ids))
     total = sum(len(ids) for _, _, ids in groups)
     blocks.append(f"<b>📊 Итого</b> · Новых твитов: {total}. Авторов: {len(groups)}.\n"
-                  f"Следующая плановая проверка — {pretty(next_due)} UTC. Интервал — {hours} ч.")
+                  f"Следующая плановая проверка — {schedule_time(next_due)}. Интервал — {hours} ч.")
     parts = []
     for block in blocks:
         if parts and units(parts[-1] + "\n\n" + block) <= LIMIT:

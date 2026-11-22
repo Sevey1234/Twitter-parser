@@ -11,6 +11,13 @@ CREATE TABLE IF NOT EXISTS bot_users (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS single_owner ON bot_users((1));
 
+CREATE TABLE IF NOT EXISTS schedule_state (
+    owner_id INTEGER PRIMARY KEY REFERENCES bot_users(telegram_user_id) ON DELETE CASCADE,
+    last_check_at TEXT,
+    last_check_result TEXT,
+    summary_retry_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS authors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     x_user_id TEXT NOT NULL UNIQUE,
