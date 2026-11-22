@@ -7,7 +7,7 @@ import httpx
 import pytest
 from telebot.apihelper import ApiTelegramException
 
-from app.ai.summarizer import MAX_SUMMARY_CHARS, Summarizer, batches, validate
+from app.ai.summarizer import MAX_SUMMARY_CHARS, ModelUnavailable, Summarizer, SummaryRejected, batches, validate
 from app.database.models import UserError
 from app.services.delivery import Delivery
 from app.services.digest_service import DigestService
@@ -49,8 +49,8 @@ def test_invalid_model_output_retried(text, quote):
         calls.append(req)
         return httpx.Response(200, json=model_response(text, quote))
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
-        with pytest.raises(UserError, match="цитатами"):
-            Summarizer(http, "http://ollama", "m").summarize(["version 2"])
+        with pytest.raises(SummaryRejected):
+            Summarizer(http, "http://ollama", "m").generate(["version 2"])
     assert len(calls) == 2
 
 
@@ -113,17 +113,17 @@ def test_grouping_no_duplicates_and_no_empty_digest(repo, pending, delivery, clo
     timeline.collect.return_value = []
     ai.summarize.side_effect = ["Новости первого автора.", "Новости второго автора."]
     service = DigestService(repo, timeline, ai, delivery)
-    assert service.run() == "Дайджест отправлен."
+    assert service.run().message == "Дайджест отправлен."
     assert [c.args[0] for c in ai.summarize.call_args_list] == [
             ["News 10/1", "News 10/2"], ["News 20/1", "News 20/2"]]
     html = delivery.bot.send_message.call_args.args[1]
     assert html.index("@Alice") < html.index("первого") < html.index("@Bob") < html.index("второго")
-    assert service.run() == "Новых публикаций нет."
+    assert service.run().message == "Новых публикаций нет."
     assert delivery.bot.send_message.call_count == 1 and not repo.pending()
     timeline.collect.return_value = ["Ошибка"]
-    assert "ошибки" in service.run()
+    assert "ошибки" in service.run().message
     service.lock.acquire()
-    assert "уже" in service.run()
+    assert "уже" in service.run().message
     service.maintenance()
     service.lock.release()
     service.maintenance()
@@ -131,9 +131,11 @@ def test_grouping_no_duplicates_and_no_empty_digest(repo, pending, delivery, clo
 
 def test_model_failure_leaves_pending_and_no_mixed_snapshot(repo, pending, delivery, clock):
     ai, timeline = Mock(), Mock()
-    ai.summarize.side_effect = UserError("Ollama")
-    with pytest.raises(UserError):
-        DigestService(repo, timeline, ai, delivery).run()
+    timeline.collect.return_value = []
+    ai.summarize.side_effect = ModelUnavailable("Ollama недоступна.")
+    result = DigestService(repo, timeline, ai, delivery).run()
+    assert result.status == "warning" and "Ollama" in result.message
+    assert repo.settings()["summary_retry_at"]
     assert len(repo.pending()) == 4 and not repo.history()
     repo.change_author("Alice", "pause")
     with pytest.raises(UserError, match="изменился"):
@@ -205,7 +207,108 @@ def test_collection_continues_while_telegram_delivery_is_uncertain(repo, clock, 
         return []
     timeline.collect.side_effect = collect
     ai = Mock()
-    assert "/delivery" in DigestService(repo, timeline, ai, delivery).run()
+    assert "/delivery" in DigestService(repo, timeline, ai, delivery).run().message
     assert [post["x_tweet_id"] for post in repo.pending()] == ["777"]
     assert len(repo.history()) == 1 and delivery.bot.send_message.call_count == 1
     ai.summarize.assert_not_called()
+
+
+def test_reactions_links_and_mentions_keep_sources_without_inventing_news():
+    transport = Mock()
+    ai = Summarizer(transport, "http://ollama", "m")
+    assert "Оригиналы" in ai.summarize(["🔥", "https://t.co/Ab9", "@alice 👋"])
+    transport.post.assert_not_called()
+    ai.generate = Mock(return_value="Автор поздоровался.")
+    assert ai.summarize(["https://t.co/Ab9", "GM!", "GM!"]) == "Автор поздоровался."
+    ai.generate.assert_called_once_with(["GM!"])
+
+
+def test_short_original_only_after_two_invalid_translations():
+    prompts = []
+    def respond(req):
+        prompts.append(json.loads(req.content)["messages"][0]["content"])
+        return httpx.Response(200, json=model_response("Лишнее утверждение.", "invented"))
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        ai = Summarizer(http, "http://ollama", "m")
+        assert ai.summarize(["GM <3", "GM <3", "👋"]) == "Короткая публикация в оригинале: «GM <3»"
+        assert "Скопируй в evidence" in prompts[1]
+        assert len(prompts) == 2
+        assert ai.summarize(["GM!", "Hi"]) == "Короткие публикации в оригинале: «GM!» · «Hi»"
+        with pytest.raises(SummaryRejected):
+            ai.summarize(["Long source. " * 20])
+        with pytest.raises(SummaryRejected):
+            ai.summarize([f"Short {n}" for n in range(11)])
+
+
+def test_quote_wrapping_and_linebreaks_are_accepted_but_rewording_is_rejected():
+    raw = model_response("Вышла версия 2.", "«version  2»")["message"]["content"]
+    assert validate(raw, ["Next version\n2 is ready"]) == "Вышла версия 2."
+    with pytest.raises(ValueError):
+        validate(raw, ["Next version numbers 2 and 3"])
+    with pytest.raises(ValueError):
+        validate(model_response("Вышла версия 2.", ".")["message"]["content"], ["version 2."])
+
+
+def test_partial_issue_retry_from_sqlite_after_restart(repo, pending, delivery, clock):
+    from app.database.connection import Database
+    from app.database.repository import Repository
+    ai, timeline = Mock(), Mock()
+    timeline.collect.return_value = []
+    ai.summarize.side_effect = [SummaryRejected("evidence"), "Выжимка второго автора."]
+    service = DigestService(repo, timeline, ai, delivery)
+    report = service.run()
+    assert report.status == "warning" and "@Alice" in report.message and "отправлен" in report.message
+    html = delivery.bot.send_message.call_args.args[1]
+    assert "@Alice" not in html and "@Bob" in html and "Новых твитов: 2. Авторов: 1." in html
+    assert len(repo.pending()) == 2 and "на выжимку: 2" in delivery.inspect_or_resolve("")
+    assert [r["x_tweet_id"] for r in repo.pending()] == ["101", "102"]
+    assert not service.maintenance()
+    clock.step(minutes=4, seconds=59)
+    restarted = Repository(Database(repo.db.path), repo.owner, clock=clock)
+    assert restarted.settings()["summary_retry_at"] == repo.settings()["summary_retry_at"]
+    offline_x = Mock()
+    recovered_ai = Mock()
+    recovered_ai.summarize.return_value = "Выжимка первого автора."
+    recovered = DigestService(restarted, offline_x, recovered_ai, Delivery(restarted, delivery.bot))
+    assert not recovered.maintenance()
+    clock.step(seconds=1)
+    assert recovered.maintenance().status == "sent"
+    assert "@Alice" in delivery.bot.send_message.call_args.args[1]
+    assert "@Bob" not in delivery.bot.send_message.call_args.args[1]
+    assert not restarted.pending() and not restarted.settings()["summary_retry_at"]
+    assert not recovered.maintenance() and delivery.bot.send_message.call_count == 2
+    offline_x.collect.assert_not_called()
+    timeline.collect.assert_called_once()
+
+
+def test_failed_local_retry_is_bounded_without_sending_empty_issue(repo, pending, delivery, clock):
+    ai, timeline = Mock(), Mock()
+    ai.summarize.side_effect = ModelUnavailable("Ollama недоступна.")
+    timeline.collect.return_value = []
+    service = DigestService(repo, timeline, ai, delivery)
+    due = repo.settings()["next_due_at"]
+    assert service.run().status == "warning"
+    first_retry = repo.settings()["summary_retry_at"]
+    clock.step(minutes=2)
+    assert service.run().status == "warning" and repo.settings()["summary_retry_at"] == first_retry
+    clock.step(minutes=3)
+    assert "следующей проверки" in service.maintenance().message
+    clock.step(minutes=12)
+    assert not service.maintenance() and not repo.settings()["summary_retry_at"]
+    assert repo.settings()["next_due_at"] == due
+    assert not repo.history() and repo.pending_count() == len(pending)
+    assert ai.summarize.call_count == 3 and timeline.collect.call_count == 2
+    delivery.bot.send_message.assert_not_called()
+
+
+def test_malformed_first_response_can_be_repaired():
+    requests = []
+    def respond(req):
+        requests.append(json.loads(req.content)["messages"][0]["content"])
+        payload = {"message": {"content": "{broken"}} if len(requests) == 1 else model_response()
+        return httpx.Response(200, json=payload)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        ai = Summarizer(http, "http://ollama", "local")
+        assert ai.summarize(["👀"]) == "В публикации только ссылка, упоминание или реакция. Оригинал доступен ниже."
+        assert ai.summarize(["version 2"]) == "Вышла версия 2."
+    assert len(requests) == 2 and "JSON по схеме" in requests[1]

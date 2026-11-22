@@ -5,6 +5,7 @@ from threading import Lock
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.database.models import UserError, moment, stamp
+from .digest_service import CheckResult
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,10 @@ class Scheduler:
         due = moment(row["next_due_at"])
         if due > self.repo.clock():
             return
-        self.execute(False)
+        started = self.repo.clock()
+        self.repo.record_check(started, "Выполняется.")
+        result = self.execute(False)
+        self.repo.record_check(started, result.message)
         # A concurrent /interval command may have installed a different schedule.
         step = timedelta(hours=row["digest_interval_hours"])
         following = due + ((self.repo.clock() - due) // step + 1) * step
@@ -38,18 +42,33 @@ class Scheduler:
 
     def execute(self, manual):
         try:
-            result = self.digest.run()
+            # A scheduled check waits for an overlapping maintenance or manual job.
+            result = self.digest.run(wait=not manual)
         except UserError as exc:
-            result = str(exc)
+            result = CheckResult("warning", str(exc))
         except Exception as exc:
             log.error("Ошибка цикла: %s", type(exc).__name__)
-            result = "Сбой обработки. Состояние сохранено, повторите /digest."
-        log.info("%s", result)
-        if manual and result != "Дайджест отправлен.":
-            try:
-                self.notify(result)
-            except Exception as exc:
-                log.warning("Не удалось отправить статус проверки: %s", type(exc).__name__)
+            result = CheckResult("warning", "Сбой обработки. Состояние сохранено, повторите /digest.")
+        label = "Ручная проверка" if manual else "Плановая проверка"
+        log.info("%s: %s", label, result.message)
+        if manual and result.status != "sent":
+            self._notify(result.message)
+        elif not manual and result.status == "warning":
+            self._notify(f"{label}. {result.message}")
+        return result
+
+    def _maintenance(self):
+        result = self.digest.maintenance()
+        if result:
+            log.info("Повтор выжимки: %s", result.message)
+            if result.status == "warning":
+                self._notify("Повтор выжимки. " + result.message)
+
+    def _notify(self, message):
+        try:
+            self.notify(message)
+        except Exception as exc:
+            log.warning("Не удалось отправить статус проверки: %s", type(exc).__name__)
 
     def manual(self):
         if not self.manual_lock.acquire(blocking=False):
@@ -69,7 +88,7 @@ class Scheduler:
 
     def start(self):
         self.refresh()
-        self.engine.add_job(self.digest.maintenance, "interval", minutes=1, id="outbox")
+        self.engine.add_job(self._maintenance, "interval", minutes=1, id="outbox")
         self.engine.start()
 
     def stop(self):

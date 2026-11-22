@@ -103,6 +103,9 @@ class Delivery:
     def inspect_or_resolve(self, arg):
         did = self.open_id()
         if not did:
+            count = self.repo.pending_count()
+            if count:
+                return f"Готового выпуска пока нет. Публикаций в очереди на выжимку: {count}."
             return "Очередь доставки пуста."
         rows = [r for r in self.repo.history(did) if r["status"] != "sent"]
         if not rows:

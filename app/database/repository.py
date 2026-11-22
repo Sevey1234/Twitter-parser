@@ -19,13 +19,28 @@ class Repository:
                        monthly_budget_micros,next_due_at) VALUES(?,?,?,?)
                        ON CONFLICT(telegram_user_id) DO NOTHING""",
                        (owner, hours, budget, self.next_due(hours)))
+            db.execute("INSERT OR IGNORE INTO schedule_state(owner_id) VALUES(?)", (owner,))
 
     def next_due(self, hours):
         return stamp(self.clock() + timedelta(hours=hours))
 
     def settings(self):
         with self.db.connect() as db:
-            return db.execute("SELECT * FROM bot_users").fetchone()
+            return db.execute("""SELECT u.*,s.last_check_at,s.last_check_result,s.summary_retry_at
+                              FROM bot_users u JOIN schedule_state s ON s.owner_id=u.telegram_user_id""").fetchone()
+
+    def record_check(self, started, result):
+        with self.db.connect(write=True) as db:
+            db.execute("UPDATE schedule_state SET last_check_at=?,last_check_result=? WHERE owner_id=?",
+                       (stamp(started), result, self.owner))
+
+    def set_summary_retry(self, due):
+        with self.db.connect(write=True) as db:
+            if due is None:
+                db.execute("UPDATE schedule_state SET summary_retry_at=NULL WHERE owner_id=?", (self.owner,))
+            else:
+                db.execute("""UPDATE schedule_state SET summary_retry_at=COALESCE(summary_retry_at,?)
+                              WHERE owner_id=?""", (stamp(due), self.owner))
 
     def interval(self, hours):
         if hours not in INTERVALS:
@@ -109,6 +124,11 @@ class Repository:
             return db.execute("""SELECT t.*,a.username FROM tweets t JOIN authors a ON a.id=t.author_id
                               WHERE t.processing_status='pending' AND a.is_active=1
                               ORDER BY a.username COLLATE NOCASE,t.created_at,t.id""").fetchall()
+
+    def pending_count(self):
+        with self.db.connect() as db:
+            return db.execute("""SELECT COUNT(*) FROM tweets t JOIN authors a ON a.id=t.author_id
+                              WHERE t.processing_status='pending' AND a.is_active=1""").fetchone()[0]
 
     def history(self, digest_id=None):
         with self.db.connect() as db:

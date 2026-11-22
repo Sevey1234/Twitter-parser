@@ -13,6 +13,14 @@ Table bot_users {
   Note: 'Настройки владельца и FSM. Одна строка владельца (индекс по константе).'
 }
 
+Table schedule_state {
+  owner_id integer [pk]
+  last_check_at text
+  last_check_result text
+  summary_retry_at text
+  Note: 'Последняя плановая проверка и срок однократного локального повтора'
+}
+
 Table authors {
   id integer [pk]
   x_user_id text [unique, not null]
@@ -113,6 +121,7 @@ Table removed_posts {
   Note: 'Удалённые источники'
 }
 
+Ref: bot_users.telegram_user_id - schedule_state.owner_id [delete: cascade]
 Ref: authors.id - sync_state.author_id [delete: cascade]
 Ref: tweets.author_id > authors.id [delete: cascade]
 Ref: digests.owner_id > bot_users.telegram_user_id
