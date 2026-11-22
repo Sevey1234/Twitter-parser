@@ -11,20 +11,24 @@ def units(text):
 
 def author_blocks(handle, summary, ids):
     title = f"<b>@{escape(handle)}</b>"
-    label = f"Новых твитов: {len(ids)}."
     links = [f'<a href="https://x.com/{handle}/status/{xid}">{i}</a>' for i, xid in enumerate(ids, 1)]
-    body = f"{title}\n{label} {escape(summary)}\n🔗 Источники ({len(ids)}): " + " · ".join(links)
+    body = f"{title}\n{escape(summary)}\n🔗 Источники ({len(ids)}): " + " · ".join(links)
     if units(body) <= LIMIT:
         return [body]
     # Escape after splitting plain text so neither tags nor HTML entities are cut.
-    parts = [title + "\n" + label]
-    for fragment in wrap(summary, width=480):
+    parts = [title]
+    for i, fragment in enumerate(wrap(summary, width=480)):
+        separator = "\n" if i == 0 else " "
         line = escape(fragment)
-        if units(parts[-1] + " " + line) > LIMIT:
+        if units(parts[-1] + separator + line) > LIMIT:
             parts.append(title + " · продолжение\n" + line)
         else:
-            parts[-1] += " " + line
-    parts[-1] += "\n🔗 Источники:"
+            parts[-1] += separator + line
+    sources = f"🔗 Источники ({len(ids)}):"
+    if units(parts[-1] + "\n" + sources + " " + (links[0] if links else "")) > LIMIT:
+        parts.append(title + "\n" + sources)
+    else:
+        parts[-1] += "\n" + sources
     for link in links:
         if units(parts[-1] + " " + link) > LIMIT:
             parts.append(title + " · источники\n" + link)

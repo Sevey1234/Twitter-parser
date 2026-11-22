@@ -7,7 +7,7 @@ import httpx
 import pytest
 from telebot.apihelper import ApiTelegramException
 
-from app.ai.summarizer import Summarizer, batches, validate
+from app.ai.summarizer import MAX_SUMMARY_CHARS, Summarizer, batches, validate
 from app.database.models import UserError
 from app.services.delivery import Delivery
 from app.services.digest_service import DigestService
@@ -24,6 +24,7 @@ def test_local_model_contract_and_reduction():
         cfg = json.loads(req.content)
         assert req.url.path == "/api/chat" and cfg["model"] == "local"
         assert cfg["stream"] is False and cfg["format"]["type"] == "object"
+        assert cfg["format"]["properties"]["sentences"]["maxItems"] == 10
         sources = json.loads(cfg["messages"][1]["content"])
         seen.extend(sources)
         return httpx.Response(200, json=model_response("Вышла версия 2.", sources[0][:12]))
@@ -35,11 +36,13 @@ def test_local_model_contract_and_reduction():
         assert "Вышла версия 2." in seen
         with pytest.raises(UserError):
             ai.summarize([])
+    texts.append(chr(1) * 1300)
+    assert all(len(json.dumps(b, ensure_ascii=False).encode()) <= 5500 for b in batches(texts))
     assert "".join(s for b in batches(texts) for s in b) == "".join(texts)
 
 
 @pytest.mark.parametrize("text,quote", [("English only", "version 2"), ("Вышла версия 13.", "version 2"),
-                                       ("Вышла версия 2.", "invented"), ("я"*901, "version 2")])
+                                       ("Вышла версия 2.", "invented"), ("я"*(MAX_SUMMARY_CHARS + 1), "version 2")])
 def test_invalid_model_output_retried(text, quote):
     calls = []
     def respond(req):
@@ -49,6 +52,17 @@ def test_invalid_model_output_retried(text, quote):
         with pytest.raises(UserError, match="цитатами"):
             Summarizer(http, "http://ollama", "m").summarize(["version 2"])
     assert len(calls) == 2
+
+
+def test_ten_sentences_fit_and_eleven_are_rejected():
+    fact = "Автор подробно описал изменения в инструментах разработки и привёл пример их применения в проекте"
+    texts = [f"{fact} {n}." for n in range(11)]
+    items = [{"text": text, "evidence": text} for text in texts]
+    result = validate(json.dumps({"sentences": items[:10]}), texts)
+    assert result == " ".join(texts[:10]) and len(result) > 900
+    assert list(batches([result, result])) == [[result, result]]
+    with pytest.raises(ValueError):
+        validate(json.dumps({"sentences": items}), texts)
 
 
 def test_unavailable_model_and_empty_response():
@@ -80,6 +94,10 @@ def test_html_keeps_entire_author_and_all_source_links(clock):
                    clock(), clock(), 12, clock())
     docs = []
     assert len(parts) > 2 and "&lt;tag&gt; &amp;" in parts[0]
+    assert sum(part.count("Новых твитов:") for part in parts) == 1
+    assert "<b>@A</b>\nтест" in parts[0]
+    assert any("<b>@B</b>\n&lt;" in part for part in parts)
+    assert any("Источники (500):" in part for part in parts)
     for part in parts:
         assert units(part) <= 3700
         doc = HTMLCheck()
