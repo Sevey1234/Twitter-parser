@@ -49,7 +49,7 @@ class DigestService:
                 summary = self.ai.summarize([r["text"] for r in posts])
             except SummaryRejected as exc:
                 log.warning("Выжимка @%s: %s", handle, exc)
-                rejected.append("@" + handle)
+                rejected.append(f"@{handle} — {exc}")
                 continue
             except ModelUnavailable as exc:
                 problem = str(exc)
@@ -59,8 +59,9 @@ class DigestService:
 
         notes = []
         if rejected:
-            handles = ", ".join(rejected[:10]) + (" и др." if len(rejected) > 10 else "")
-            notes.append(f"Выжимка для {handles} не прошла проверку по исходным твитам.")
+            notes.append("Отложена выжимка. " + " ".join(rejected[:10]))
+            if len(rejected) > 10:
+                notes.append(f"Других отложенных авторов: {len(rejected) - 10}.")
         if problem:
             notes.append(problem)
         needs_retry = bool(notes)
