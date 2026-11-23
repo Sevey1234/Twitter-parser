@@ -7,7 +7,10 @@ import httpx
 import pytest
 from telebot.apihelper import ApiTelegramException
 
-from app.ai.summarizer import MAX_SUMMARY_CHARS, ModelUnavailable, Summarizer, SummaryRejected, batches, validate
+from app.ai.summarizer import (
+    MAX_BATCH_ITEMS, MAX_SUMMARY_CHARS, InvalidSummary, ModelUnavailable, Summarizer,
+    SummaryRejected, batches, evidence_excerpts, normalized, validate,
+)
 from app.database.models import UserError
 from app.services.delivery import Delivery
 from app.services.digest_service import DigestService
@@ -231,7 +234,7 @@ def test_short_original_only_after_two_invalid_translations():
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
         ai = Summarizer(http, "http://ollama", "m")
         assert ai.summarize(["GM <3", "GM <3", "👋"]) == "Короткая публикация в оригинале: «GM <3»"
-        assert "Скопируй в evidence" in prompts[1]
+        assert "Подтверждающая цитата не найдена" in prompts[1]
         assert len(prompts) == 2
         assert ai.summarize(["GM!", "Hi"]) == "Короткие публикации в оригинале: «GM!» · «Hi»"
         with pytest.raises(SummaryRejected):
@@ -254,10 +257,12 @@ def test_partial_issue_retry_from_sqlite_after_restart(repo, pending, delivery, 
     from app.database.repository import Repository
     ai, timeline = Mock(), Mock()
     timeline.collect.return_value = []
-    ai.summarize.side_effect = [SummaryRejected("evidence"), "Выжимка второго автора."]
+    reason = "Модель указала неверную ссылку на фрагмент источника."
+    ai.summarize.side_effect = [SummaryRejected(reason), "Выжимка второго автора."]
     service = DigestService(repo, timeline, ai, delivery)
     report = service.run()
     assert report.status == "warning" and "@Alice" in report.message and "отправлен" in report.message
+    assert reason in report.message
     html = delivery.bot.send_message.call_args.args[1]
     assert "@Alice" not in html and "@Bob" in html and "Новых твитов: 2. Авторов: 1." in html
     assert len(repo.pending()) == 2 and "на выжимку: 2" in delivery.inspect_or_resolve("")
@@ -305,10 +310,78 @@ def test_malformed_first_response_can_be_repaired():
     requests = []
     def respond(req):
         requests.append(json.loads(req.content)["messages"][0]["content"])
-        payload = {"message": {"content": "{broken"}} if len(requests) == 1 else model_response()
+        payload = {"message": {"content": "{broken"}} if len(requests) == 1 else model_response(evidence=["1.1"])
         return httpx.Response(200, json=payload)
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
         ai = Summarizer(http, "http://ollama", "local")
         assert ai.summarize(["👀"]) == "В публикации только ссылка, упоминание или реакция. Оригинал доступен ниже."
         assert ai.summarize(["version 2"]) == "Вышла версия 2."
-    assert len(requests) == 2 and "JSON по схеме" in requests[1]
+    assert len(requests) == 2 and "формату JSON" in requests[1]
+
+
+def test_excerpts_are_contiguous_and_keep_source_boundaries():
+    first = 'Слово\u00a0с переносом\nи «кавычками». ' * 13
+    identifier = "9" * 210
+    texts = [first, "👋", identifier + " подписей"]
+    excerpts = evidence_excerpts(texts)
+    assert "1.2" in excerpts and "2.1" not in excerpts
+    assert excerpts["3.1"] == identifier
+    for key, quote in excerpts.items():
+        index = int(key.partition(".")[0]) - 1
+        assert quote in normalized(texts[index])
+    many = [str(n) for n in range(3 * MAX_BATCH_ITEMS)]
+    groups = list(batches(many))
+    assert max(map(len, groups)) <= MAX_BATCH_ITEMS
+    assert [text for group in groups for text in group] == many
+
+
+@pytest.mark.parametrize("sentence,refs", [
+    ("Версия 2.", []), ("Версия 2.", ["9.9"]), ("Версия 2.", "1.1"),
+    ("Версия 2.", [True]), ("Версия 2.", ["1.1"] * 5),
+    ("Срок — 2027 год.", ["1.1"]), ("Version 2.", ["1.1"]),
+])
+def test_repair_rejects_unknown_references_or_unsupported_facts(sentence, refs):
+    sources = ["Version 2.", "The deadline is in 2027."]
+    reply = model_response(sentence, refs)["message"]["content"]
+    with pytest.raises(InvalidSummary):
+        validate(reply, sources, excerpts=evidence_excerpts(sources))
+
+
+def test_translated_evidence_recovers_in_same_issue_without_reading_x_again(repo, pending, delivery):
+    first = ("The release is ready. " * 9) + "The release number is 12."
+    with repo.db.connect(write=True) as db:
+        db.execute("UPDATE tweets SET text=? WHERE x_tweet_id='101'", (first,))
+        db.execute("UPDATE tweets SET text=? WHERE x_tweet_id='102'", ("The next update is due in 2027.",))
+    requests = []
+    def respond(req):
+        cfg = json.loads(req.content)
+        data = json.loads(cfg["messages"][1]["content"])
+        requests.append(data)
+        field = cfg["format"]["properties"]["sentences"]["items"]["properties"]["evidence"]
+        if isinstance(data, dict):
+            assert "News 20" not in str(data)
+            assert field["items"]["enum"] == list(data)
+            selected = [k for k, quote in data.items() if "12" in quote or "2027" in quote]
+            assert len(selected) == 2
+            result = model_response("Вышла версия 12, следующее обновление ожидается в 2027 году.", selected)
+        elif first in data:
+            # Old failure: the model translated the hidden quote along with the summary.
+            result = model_response("Вышла новая версия.", "Новая версия готова")
+        else:
+            assert field["type"] == "string" and first not in data
+            result = model_response("Опубликованы новости второго автора.", "News 20/1")
+        return httpx.Response(200, json=result)
+
+    timeline = Mock()
+    timeline.collect.return_value = []
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        digest = DigestService(repo, timeline, Summarizer(http, "http://ollama", "model"), delivery)
+        assert digest.run().status == "sent"
+        timeline.collect.assert_called_once()
+        assert len(requests) == 3 and not repo.pending() and not repo.settings()["summary_retry_at"]
+        html = delivery.bot.send_message.call_args.args[1]
+        assert "версия 12" in html and "2027" in html and "Новых твитов: 4. Авторов: 2." in html
+        for post in pending:
+            assert f"/status/{post['x_tweet_id']}" in html
+        assert digest.run().status == "empty" and len(repo.history()) == 1
+        assert delivery.bot.send_message.call_count == 1
