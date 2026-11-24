@@ -1,6 +1,6 @@
 """Common value types. SQLite stores UTC timestamps with fixed precision."""
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def now():
@@ -18,6 +18,12 @@ def moment(value):
     if parsed.utcoffset() is None:
         raise ValueError("X вернул дату без часового пояса.")
     return parsed.astimezone(timezone.utc)
+
+
+def next_slot(due, hours, completed):
+    interval = timedelta(hours=hours)
+    elapsed = max(0, (completed - due) // interval)
+    return due + (elapsed + 1) * interval
 
 
 class UserError(Exception):
