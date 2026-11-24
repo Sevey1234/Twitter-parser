@@ -34,6 +34,13 @@ class Repository:
             db.execute("UPDATE schedule_state SET last_check_at=?,last_check_result=? WHERE owner_id=?",
                        (stamp(started), result, self.owner))
 
+    def finish_check(self, result, due, following):
+        with self.db.connect(write=True) as db:
+            db.execute("UPDATE schedule_state SET last_check_result=? WHERE owner_id=?", (result, self.owner))
+            # An /interval change during collection already installed its own deadline.
+            db.execute("UPDATE bot_users SET next_due_at=? WHERE telegram_user_id=? AND next_due_at=?",
+                       (stamp(following), self.owner, stamp(due)))
+
     def set_summary_retry(self, due):
         with self.db.connect(write=True) as db:
             if due is None:
@@ -136,6 +143,12 @@ class Repository:
                 return db.execute("SELECT * FROM digests ORDER BY id DESC LIMIT 10").fetchall()
             return db.execute("SELECT * FROM digest_parts WHERE digest_id=? ORDER BY part",
                               (digest_id,)).fetchall()
+
+    def source_period(self, digest_id):
+        with self.db.connect() as db:
+            return db.execute("""SELECT MIN(t.created_at), MAX(t.created_at)
+                              FROM digest_tweets dt JOIN tweets t ON t.id=dt.tweet_id
+                              WHERE dt.digest_id=?""", (digest_id,)).fetchone()
 
     def prune(self, days=30):
         cutoff = stamp(self.clock() - timedelta(days=days))

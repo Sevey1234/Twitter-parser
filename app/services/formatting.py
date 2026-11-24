@@ -4,6 +4,7 @@ from textwrap import wrap
 
 # Headroom for delivery ID, history caption and Telegram entities.
 LIMIT = 3700
+MOSCOW = timezone(timedelta(hours=3))
 
 
 def units(text):
@@ -40,7 +41,7 @@ def author_blocks(handle, summary, ids):
 
 def schedule_time(value):
     utc = value.astimezone(timezone.utc)
-    moscow = utc.astimezone(timezone(timedelta(hours=3)))
+    moscow = utc.astimezone(MOSCOW)
     return f"{moscow:%d.%m.%Y %H:%M} МСК ({utc:%d.%m.%Y %H:%M} UTC)"
 
 
@@ -53,8 +54,9 @@ def render(groups, start, end, hours, next_due):
     for handle, summary, ids in groups:
         blocks.extend(author_blocks(handle, summary, ids))
     total = sum(len(ids) for _, _, ids in groups)
+    label = "Следующая плановая проверка" if next_due > end else "Наступило время плановой проверки"
     blocks.append(f"<b>📊 Итого</b> · Новых твитов: {total}. Авторов: {len(groups)}.\n"
-                  f"Следующая плановая проверка — {schedule_time(next_due)}. Интервал — {hours} ч.")
+                  f"{label} — {schedule_time(next_due)}. Интервал — {hours} ч.")
     parts = []
     for block in blocks:
         if parts and units(parts[-1] + "\n\n" + block) <= LIMIT:

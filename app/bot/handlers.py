@@ -4,7 +4,7 @@ from dataclasses import asdict
 from app.config import dollars, micros
 from app.database.models import Profile, UserError, moment
 from app.database.repository import INTERVALS
-from app.services.formatting import schedule_time
+from app.services.formatting import MOSCOW, schedule_time
 from . import keyboards as kb
 from .states import State
 
@@ -14,9 +14,9 @@ HELP = """Twitter Digest Bot · личный кабинет
 /edit_author — изменить подпись
 /pause_author и /resume_author — пауза и продолжение
 /remove_author — удалить автора
-/interval — периодичность дайджеста
+/interval — интервал автоматической проверки X
 /digest — проверить новые публикации сейчас
-/history — история, /history N — части дайджеста
+/history — история, /history N — выпуск и время публикации источников
 /settings — расписание и результат последней плановой проверки
 /reset_settings — вернуть настройки из .env
 /stats — запросы, публикации и расходы
@@ -88,7 +88,7 @@ class Chat:
             if arg:
                 self.answer(arg)
         elif cmd == "interval":
-            self.ask(State.INTERVAL, "Как часто отправлять дайджест?", list(map(str, INTERVALS)))
+            self.ask(State.INTERVAL, "Как часто проверять новые публикации X?", list(map(str, INTERVALS)))
         elif cmd == "budget":
             self.ask(State.BUDGET, f"Лимит в месяц: ${dollars(self.repo.settings()['monthly_budget_micros'])}. "
                      "Введите новый предел в USD. Ноль остановит платные чтения.")
@@ -115,16 +115,13 @@ class Chat:
         elif cmd == "digest":
             self.say(self.scheduler.manual())
         elif cmd == "history":
-            if not arg:
+            if arg:
+                self.archive(arg)
+            else:
                 rows = self.repo.history()
                 self.say("\n".join(f"#{r['id']} · {r['period_end'][:10]} · "
                                    + ("отправлен" if r["status"] == "sent" else "в очереди")
                                    for r in rows) or "История пуста.")
-            elif arg.isascii() and arg.isdigit() and len(arg) <= 15 and self.repo.history(int(arg)):
-                for part in self.repo.history(int(arg)):
-                    self.say(f"<b>Архив #{int(arg)} · часть {part['part']}</b>\n" + part["html"], html=True)
-            else:
-                raise UserError("Используйте /history или /history N с номером из истории.")
         elif cmd == "forget_tweet":
             if not arg.isascii() or not arg.isdigit() or not 1 <= len(arg) <= 19:
                 raise UserError("Укажите числовой ID из ссылки: /forget_tweet ID.")
@@ -134,6 +131,21 @@ class Chat:
             self.say(self.delivery.inspect_or_resolve(arg))
         else:
             self.say("Список команд доступен в /help.")
+
+    def archive(self, value):
+        number = int(value) if value.isascii() and value.isdigit() and len(value) <= 15 else None
+        parts = self.repo.history(number) if number is not None else []
+        if not parts:
+            raise UserError("Используйте /history или /history N с номером из истории.")
+        first, last = self.repo.source_period(number)
+        source_note = ""
+        if first:
+            dates = (first,) if first == last else (first, last)
+            times = " — ".join(moment(t).astimezone(MOSCOW).strftime("%d.%m.%Y %H:%M:%S") for t in dates)
+            source_note = f"Время публикации сохранённых источников в X: {times} МСК.\n"
+        for part in parts:
+            header = f"<b>Архив #{number} · часть {part['part']}</b>\n"
+            self.say(header + (source_note if part["part"] == 1 else "") + part["html"], html=True)
 
     def answer(self, value):
         state, data = self.repo.conversation()
@@ -149,7 +161,7 @@ class Chat:
                 raise UserError("Выберите 3, 6, 12 или 24.")
             self.repo.interval(int(value))
             self.scheduler.refresh()
-            self.finish(f"Дайджест будет приходить каждые {value} ч.")
+            self.finish(f"Проверяю X каждые {value} ч. Когда есть новые публикации, отправляю дайджест.")
         elif state == State.BUDGET:
             self.repo.budget(micros(value))
             self.finish("Месячный лимит сохранён.")

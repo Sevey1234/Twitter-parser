@@ -93,10 +93,22 @@ def test_commands_buttons_crud(chat, repo):
 def test_chat_archive_and_unexpected_error(chat, pending, delivery, clock):
     did = delivery.queue(pending, ["независимый текст"], clock(), clock())
     assert "в очереди" in input_text(chat, "/history")
-    assert "Архив" in input_text(chat, f"/history {did}")
+    archive = input_text(chat, f"/history {did}")
+    assert "Архив" in archive and "21.11.2026 12:10:00 МСК" in archive
     assert chat.bot.send_message.call_args.kwargs["parse_mode"] == "HTML"
     chat.scheduler.manual.side_effect = ValueError("secret")
     assert "secret" not in input_text(chat, "/digest")
+
+
+def test_archive_shows_original_post_times_even_for_existing_issues(chat, pending, delivery, clock):
+    with chat.repo.db.connect(write=True) as db:
+        db.execute("UPDATE tweets SET created_at=? WHERE id=?",
+                   ("2026-11-21T09:43:29.000000Z", pending[-1]["id"]))
+    did = delivery.queue(pending, ["первая часть", "вторая часть"], clock(), clock())
+    input_text(chat, f"/history {did}")
+    first, second = [call.args[1] for call in chat.bot.send_message.call_args_list]
+    assert "21.11.2026 12:10:00 — 21.11.2026 12:43:29 МСК" in first
+    assert "первая часть" in first and "вторая часть" in second and "источников" not in second
 
 
 def test_scheduler_due_restart_and_manual(repo, clock):
@@ -130,7 +142,8 @@ def test_scheduler_due_restart_and_manual(repo, clock):
     after._manual_job()
     notify.assert_called_with("Новых публикаций нет.")
     from app.database.models import UserError
-    for err in (UserError("ошибка"), RuntimeError("private")):
+    from sqlite3 import OperationalError
+    for err in (UserError("ошибка"), OperationalError("private"), RuntimeError("private")):
         digest.run.side_effect = err
         after.execute(True)
         assert "private" not in notify.call_args.args[0]
@@ -206,6 +219,9 @@ def test_overlapping_manual_and_scheduled_checks_keep_due_slot(chat, repo, clock
             assert scheduled_started.wait(3)
             assert repo.settings()["next_due_at"] == due
             assert "Выполняется." in input_text(chat, "/settings")
+            # The concurrent maintenance tick leaves this slot to the running scheduled job.
+            scheduler._maintenance()
+            assert timeline.collect.call_count == 1
         finally:
             release_manual.set()
         assert manual.result(timeout=3).status == "empty"
